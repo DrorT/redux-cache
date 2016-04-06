@@ -1,215 +1,235 @@
-import {operationReducerFactory, bindOperationToActionCreators} from 'redux-operations';
-import {getTree, getPathFromRef, set, getFromState} from './redux-cache';
-import {appendChangeToState, traverse} from './helpers';
-export const CACHE_SET = 'CACHE_SET';
-export const CACHE_GET = 'CACHE_GET';
-
-// Tree of locations in state, that in each path has everything that depends on that path
-let dependeciesTree = {};
-// array of denorm functions to run when their dependencies are called
-let functionArray = [];
-// object with keys as components Ids and true/false to inddicate a component should rendere
-
-// 1st stage - keep the component ID and last props, if props not have changed and does not need to render then skip
-// if needs to render or props changed renders and update props in hash
-let componentDependenciesTree = {};
-let componentRenders = {};
-let idCounter = 1;
+import {parse, visit} from 'graphql/language';
+import {printAST, mergeRecursive, assign as assignFn, appendChangeToState} from './helpers';
 
 /**
- * An action creator - for declaring what data is needed by the client
- * @param startPoint
+ * a getter for the state, to get an
+ * follows references of format defined at getPathFromRef
+ * path of '/' will return to state root
+ * @param state - the redux full state, or at least this is assumed to be the full state, for following refs
+ * @param path - an array of paths to follow
+ * @param startLocation - starting position in the state (the root of the object)
+ * @param options -
+ *    followRefs - if to follow references in the state
+ *    returnPartial - if to return a partial object marking how far down in the state we managed to get till we are missing data
+ */
+export const getFromState = (state, path = undefined, startLocation = undefined, options={followRefs: true, returnPartial:false})=>{
+  if(path===undefined)
+    return state;
+  let {followRefs, returnPartial} = options;
+  startLocation = startLocation || state;
+  let currentLocation = startLocation;
+  let currentLocationPath = [];
+  for(let idx=0; idx<path.length; idx++){
+    let pathPart = path[idx];
+    if(pathPart == '/'){
+      currentLocation = state;
+      continue;
+    }
+    if(!currentLocation.hasOwnProperty(pathPart)) {
+      if(!returnPartial)
+        return undefined;
+      else
+        return {exists: false, deepestPath: currentLocationPath, deepestData: currentLocation, pathLeft:path.slice(idx)};
+    } else {
+      // TODO - check for array - what shall we do then?
+      currentLocation = currentLocation[pathPart];
+      currentLocationPath.push(pathPart);
+      let pathFromRef = getPathFromRef(currentLocation, state);
+      if(pathFromRef){
+        if(followRefs){
+          let result = getFromState(state, pathFromRef.concat(path.slice(idx+1)), state, {followRefs, returnPartial});
+          // if could not find the reference
+          if((result=={})||(result.deepestPath&&result.deepestPath.length<=currentLocation['$path'].length)){
+            return {exists: false, deepestPath: currentLocationPath, deepestData: currentLocation, pathLeft:path.slice(idx)};
+          } else if(result.deepestPath) {
+            // partial result
+            return {exists: false, deepestPath: currentLocationPath.concat(result.deepestPath.slice(currentLocation.path.length)), deepestData: result.deepestData, pathLeft:result.pathLeft};
+          } else {
+            //final result
+            return result;
+          }
+        } else {
+          return currentLocation;
+        }
+      }
+    }
+  }
+  return currentLocation;
+};
+
+/**
+ * 2 types of references are supported - {$type:'ref', $path:["path","to","object"]} or {$type:'ref', $entity:'EntityName', $id:'entityId'}
+ * This function changes both to a path array
+ * The real use of this is if we decide to have a specific location for normalized data. At the moment assumption is it is at the state root
+ * @param ref object described above
+ * @returns {*}
+ */
+export const getPathFromRef = (ref, state=undefined) =>{
+  if(typeof ref==="object" && ref['$type'] && ref['$type']==='ref') {
+    if (ref['$path'] !== undefined) {
+      if (Array.isArray(ref['$path']))
+        return ref['$path'];
+      else if (typeof ref['$path'] === 'string')
+        return [ref['$path']];
+    } else if (ref['$entity'] !== undefined){
+      if(state && state.cache !== undefined)
+        return ['cache', ref['$entity'], ref['$id']];
+      else
+        return [ref['$entity'], ref['$id']];
+    }
+  }
+  return undefined;
+};
+
+export const get = (state, path)=> getFromState(state, path, undefined, {followRefs:false, returnPartial:false});
+export const getIn = (state, path, startLocation)=> getFromState(state, path, startLocation, {followRefs:false, returnPartial:false});
+export const set = (state, path, data)=> appendChangeToState(path, state, data);
+
+/**
+ * based on state, start location and a graphQL like fragment returns the data from the state
+ * Also returns a structure of dependencies and of missing data in case some is missing, for missing data also returns reduced AST
+ * @param state
+ * @param dataAST
+ * @param startPoint - the starting point for the AST, can be an object of type reference or a path array
+ */
+export const getTree = (state, dataAst, startPoint = undefined) => {
+  let path = startPoint = getPathFromRef(startPoint, state) || startPoint;
+  let startLocation = getFromState(state, startPoint, undefined, {followRefs: false});
+  if(!startLocation)
+    return undefined;
+  if(!dataAst)
+    return {result: startLocation, missing: undefined, printedMissing: '{}', missingNormalized: {}, dependenciesNormalized:{}, dependenciesArray:[path], missingArray:[]};
+
+  // create AST from fragments
+  dataAst = typeof dataAst === 'string' ? parse(dataAst) : dataAst;
+
+  if (Array.isArray(startLocation)) {
+    return startLocation.map((val) => {
+      return getTreeFromStartAndAST(val, dataAst);
+    });
+  } else
+    return getTreeFromStartAndAST(startLocation, dataAst);
+
+  function getTreeFromStartAndAST(stateStartPoint, ast) {
+    // visit the AST using graphql depth 1st
+    let result = {};
+    let currentLocation = result;
+    let locationStack = [];
+    let locationInState = stateStartPoint;
+    let doNothing = false;
+    let missingNormalized = {};
+    let missingArray = [];
+    let dependenciesNormalized ={};
+    let dependenciesArray = [];
+
+    const visitor = {
+      Field: {
+        enter(node) {
+          if(!doNothing) {
+            let newPath = getPathFromRef(locationInState);
+            if (newPath){
+              path = newPath;
+              locationInState = getFromState(state, newPath);
+            }
+            path = path.concat([node.name.value]);
+            let stateValue = getFromState(state, [node.name.value], locationInState);
+            // if there is no data no reason to go down this tree
+            if (!stateValue) {
+              assignFn(missingNormalized, path, node);
+              missingArray.push(path);
+              path = path.slice(0,-1);
+              return false;
+            }
+            assignFn(dependenciesNormalized, path, node);
+            dependenciesArray.push(path);
+            // if node has selectionSet we are still going lower
+            if (!node.selectionSet) {
+              // this is the final value and should be added
+              // TODO - if array get the limit and offset argument and copy only part of the array
+              currentLocation[node.name.value] = stateValue;
+              // adds the data to be dependant data for result
+              path = path.slice(0,-1);
+              // returns null to remove the subtree from the graphql AST showing we have the data already
+              return null;
+            } else {
+              locationStack.push(locationInState);
+              locationInState = stateValue;
+              let resultAST;
+              if (Array.isArray(locationInState)) {
+                // TODO - get the limit and offset argument and copy only part of the array
+                currentLocation[node.name.value] = [];
+                let oldLocation = currentLocation;
+                let oldPath = path;
+                let baseLocation = currentLocation[node.name.value];
+                let ASTarray = locationInState.map((location, idx)=> {
+                  baseLocation[idx] = {};
+                  currentLocation = baseLocation[idx];
+                  // optimization so references are only checked for once
+                  locationInState = location;
+                  return visit(node.selectionSet, visitor);
+                });
+                currentLocation = oldLocation;
+                path = oldPath;
+                resultAST = ASTarray.reduce((prev, curr)=> {
+                  return mergeRecursive(prev, curr, true);
+                }, {});
+              } else {
+                let oldLocation = currentLocation;
+                currentLocation[node.name.value] = {};
+                currentLocation = currentLocation[node.name.value];
+                resultAST = visit(node.selectionSet, visitor);
+                currentLocation = oldLocation;
+              }
+              locationInState = locationStack.pop();
+              path = path.slice(0,-1);
+              if (resultAST.selections.length > 0) {
+                // this is a workaround graphql Visitor not working as expected -
+                // if this function return a new node value it will start walking that data (not what I want)
+                // if this function returns false or null it will not call the leave fucntion
+                // so the below code, minimizes the unnecessary walking of the tree, while still getting leave function called to update the result node value
+                node.newSelectionSet = resultAST;
+                doNothing = true;
+                return {...node, selectionSet: {...node.newSelectionSet, selections:[]}};
+              }
+              else
+                return null;
+            }
+          }
+        },
+        leave(node, key, parent, path, ancestors){
+          if(doNothing && node.newSelectionSet!==undefined){
+            doNothing = false;
+            return {...node, selectionSet: node.newSelectionSet, newSelectionSet:undefined};
+          }
+        }
+      }
+    };
+    const missing = visit(ast, visitor);
+    return {result, missing, printedMissing: printAST(missing), missingNormalized, dependenciesNormalized, dependenciesArray, missingArray};
+  }
+};
+
+/**
+ * uses getTree to get the needed data, can memoize result to a specific place or "in place"
+ * @param state
  * @param dataAst
- * @param options are:
+ * @param startPoint
+ * @param options - are:
  *    memoize - true/false
  *    memoizeInPlace - if true will add the data to the startLocation object
- *    memoizeDestinationPath - if inPlace is true, this is a relative path to the start object, otherwise it is a path from state start
- * @returns {{meta: {cache: boolean, startPoint: *, dataAst: *, options: {}}}}
+ *    memoizeDestinationPath - if inPlace is false will use this path as the destination for the data, this is a relative path starting at start point
  */
-export const cacheGet = (startPoint, dataAst, options={memoize: false, memoizeInPlace: true, memoizeDestinationPath:[]}) => {
-  return {
-    type: CACHE_GET,
-    meta: {
-      cache: {
-        startPoint,
-        dataAst,
-        options
-      }
-    }
-  };
-};
-
-/**
- * An action creator - for setting normalized data in the state
- * @param path
- * @param data
- * @returns {{type: string, meta: {path: *, data: *}}}
- */
-export const cacheSet = (path, data) => {
-  return {
-    type: CACHE_SET,
-    meta: {
-      cache: {
-        path,
-        data
-      }
-    }
-  };
-};
-
-export const actionCreators = {cacheGet, cacheSet};
-
-// the initial state to start the object with - should be initialized before coombineReducers
-let initialState = {};
-
-export const cache = (initialStateP={}) => {
-  initialState = initialStateP;
-  return operationReducerFactory('cache', initialState, {
-    CACHE_GET: {
-      resolve: (state, action)=> {
-        const { startPoint, dataAst, options } = action.meta.cache;
-        const tree = getTree ( state, dataAst, startPoint);
-        let newState = state;
-        // tree has - result, missingAST, printedMissing, missingNormalized, dependenciesNormalized, dependenciesArray, missingArray
-        // TODO - if missing not empty should call transport layer for missing data
-        // updates state if memoized was requested
-        if(options.memoize){
-          let path = [];
-          if(options.memoizeInPlace)
-            path = getPathFromRef(startPoint) || startPoint;
-          if(options.memoizeDestinationPath)
-            path = path.concat(options.memoizeDestinationPath);
-          updateDependenciesFromPath(path);
-          newState = set(state, path, tree.result);
-        }
-        return newState;
-      }
-    },
-    CACHE_SET: {
-      resolve: (state, action)=> {
-        const { path, data } = action.meta.cache;
-        let fullPath = getPathFromRef(path) || path;
-        updateDependenciesFromPath(fullPath);
-        return set(state, fullPath, data, false);
-      }
-    }
-  });
-};
-
-/**
- * updates all components that depend on something in the path to rerender, meaning that it will go down the path and any component that depends on anything down the path will be marked for rerender
- * @param path
- */
-const updateDependenciesFromPath = (path) => {
-  let currentLocation = componentDependenciesTree;
-  if(path[0] !== 'cache')
-    currentLocation = currentLocation['cache'];
-  for(let i =0; i<=path.length; i++){
-    if(currentLocation) {
-      if (currentLocation.hasOwnProperty("$dependants")) {
-        Object.keys(currentLocation["$dependants"]).forEach((id)=> {
-          if (componentRenders[id] !== undefined)
-            componentRenders[id] = true;
-          else
-            delete currentLocation["$dependants"][id];
-        });
-      }
-      currentLocation = currentLocation[path[i]];
-    } else {
-      break;
-    }
-    // should also invalidate anything that depends on lower levels than the level we got to, this is in case that any of the lower levels changed or was deleted
-    if(currentLocation){
-      traverse(currentLocation, (id)=>{
-        if (componentRenders[id] !== undefined)
-          componentRenders[id] = true;
-      });
-    }
-  }
-};
-
-/**
- * Not to be cofused with redux-operatioms walkState - this one simply tries to get the element based on the path
- * @param locationInState
- * @param state
- * @returns {*} - whatever value it finds in the state or undefined
- */
-export const walkCache = (pathsObject) => {
-  let componentId;
-  let previousProps = undefined;
-  let previousResult = undefined;
-  return (state, props)=> {
-    // TODO - rearrange so dependency on props is only in case pathsObject is a function, otherwise the props can have no affect
-    let startTime = Date.now();
-    // in case the props changed remove the old componentId from the renders object
-    if(componentId!==undefined && props !== previousProps)
-      delete componentRenders[componentId];
-    // if no componentId or props have change needs a new id.
-    // if props change we get a new Id as this way we can have new dependencies
-    if (!componentId || props !== previousProps)
-      componentId = idCounter++;
-    // gets current props object from the components dependencies object
-    let currentComponent = componentRenders[componentId];
-    // if we already have the component registered and for the same props
-    if (currentComponent === false && previousProps === props) {
-      let endTime = Date.now();
-      console.log("walk cache in "+(endTime-startTime)+"ms");
-      return previousResult;
-    }
-    componentRenders[componentId] = false;
-    previousResult = {};
-    previousProps = props;
-
-    // if pathsObject is a function (depends on props) calculate its value
-    let pObject = pathsObject;
-    if(typeof pathsObject === 'function')
-      pObject = pathsObject(state, props);
-    let stateResult = {};
-    Object.keys(pObject).forEach((key)=> {
-      if (previousResult.hasOwnProperty(key))
-        stateResult[key] = previousResult[key];
-      else {
-        let result = getFromCache(state, pObject[key], componentId);
-        stateResult[key] = previousResult[key] = result;
-      }
-    });
-    state.componentDependenciesTree = componentDependenciesTree;
-    state.componentRenders = componentRenders;
-    let endTime = Date.now(0);
-    console.log("walk cache in "+(endTime-startTime)+"ms");
-    return stateResult;
-  }
-};
-
-/** simple get from cache with queryObject being one of a few options
- * @param state
- * @param queryObject -
- *    array - path from state root to data
- *    object with "path" key for start location and "query" - graphQL fragment for data needed
- *    object with "ref" key for start location and "query" - graphQL fragment for data needed
- * @param componentId - if available adds dependency for component on result locations
- */
-const getFromCache = (state, queryObject, componentId) => {
-  let result, dependencies;
-  if(Array.isArray(queryObject)) {
-    result = getFromState(state, queryObject);
-    dependencies = [queryObject];
-  } else {
-    if (typeof queryObject !== 'object')
-      return undefined;
-    const ref = queryObject["path"] ? {$type: "ref", $path: queryObject["path"]} : queryObject;
-    result = getTree(state, queryObject["query"], ref);
-    if(result) {
-      dependencies = result.missingArray.concat(result.dependenciesArray);
-      result = result.result;
-    }
-  }
-  if(result !== undefined && componentId!==undefined) {
-    const componentObject = {};
-    componentObject[componentId] = componentId;
-    dependencies.forEach((dep)=> {
-      componentDependenciesTree = appendChangeToState(dep.concat(["$dependants"]), componentDependenciesTree, componentObject);
-    });
+export const getDataAndMemoize = (state, dataAst, startPoint = undefined, options={}) => {
+  let {memoize, memoizeInPlace, memoizeDestinationPath} = options;
+  memoize = memoize===undefined ? true : memoize;
+  memoizeInPlace = memoizeInPlace===undefined ? true : memoizeInPlace;
+  let result = getTree(state, dataAst, startPoint);
+  if(memoize){
+    startPoint = getPathFromRef(startPoint) || startPoint;
+    if(!memoizeInPlace && memoizeDestinationPath)
+      startPoint = startPoint.concat(memoizeDestinationPath);
+    // TODO - set should return new tree
+    set(state, startPoint, result.result);
   }
   return result;
 };

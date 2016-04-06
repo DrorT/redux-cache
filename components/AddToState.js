@@ -1,7 +1,7 @@
 import React, { Component, PropTypes } from 'react'
 import {walkState} from 'redux-operations';
 import {connect} from 'react-redux';
-import {cacheSet} from '../redux-cache/cache';
+import {cacheSet} from '../redux-cache/redux-cache';
 
 
 const mapStateToProps = state => {

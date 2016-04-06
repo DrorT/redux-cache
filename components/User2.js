@@ -1,21 +1,23 @@
 import React, { Component, PropTypes } from 'react'
-import {walkState, bindOperationToActionCreators} from 'redux-operations';
 import {connect} from 'react-redux';
-import {walkCache} from '../redux-cache/cache';
+import {walkCache} from '../redux-cache/redux-cache';
 
 const mapStateToProps = () =>
   walkCache((state,props)=>{
-    return { user: {$type:'ref', $entity:'user', $id:props.id, query:'{firstname, lastname}'} };
+    return { user: {$type:'ref', $entity:'user', $id:props.id, query:'{firstname, lastname}'}, user1:  {$type:'ref', $entity:'user', $id:props.id+1, query:'{firstname, lastname}'}};
   });
 
 @connect(mapStateToProps)
 export default class User2 extends Component {
   render() {
-    const { user, dispatch} = this.props;
+    const { user, user1, dispatch} = this.props;
     return (
       <div>
         <p>
-          {JSON.stringify(user)}
+          user:{JSON.stringify(user)}
+        </p>
+        <p>
+          user1:{JSON.stringify(user1)}
         </p>
       </div>
     )

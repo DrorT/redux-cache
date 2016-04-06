@@ -1,12 +1,8 @@
-import { bindActionCreators } from 'redux'
-import { connect } from 'react-redux'
 import Counter from '../components/Counter'
-import ClickCounter from '../components/ClickCounter'
-import MultiplyAll from '../components/MultiplyAll'
-import AddDynamicCounters from '../components/AddDynamicCounters'
 import AddToState from '../components/AddToState'
-import User from '../components/User'
 import User2 from '../components/User2'
+import User from '../components/User'
+import CounterWithUser from '../components/CounterWithUser'
 import React, { Component, PropTypes } from 'react'
 
 const topCounter = ['counters', 'top'];
@@ -27,7 +23,18 @@ export default class Counters extends Component {
         <div className="add-to-state">
           <AddToState/>
         </div>
-        <User />
+        <div>
+          <h2>2. User</h2>
+          <User2 id="1"/>
+        </div>
+        <div>
+          <h2>3. Counter with User</h2>
+          <CounterWithUser />
+        </div>
+        <div>
+          <h2>4. User with Counter</h2>
+          <User />
+        </div>
       </div>
     )
   }

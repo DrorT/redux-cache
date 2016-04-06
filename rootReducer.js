@@ -3,7 +3,7 @@ import {counter} from './ducks/counter'
 import {clickCounter} from './ducks/clickCounter'
 import {multiplyAll} from './ducks/multiplyAll'
 import {user} from './ducks/userReducer'
-import {cache} from './redux-cache/cache'
+import {cache} from './redux-cache/redux-cache'
 
 let cacheInitialState = {
   user:{

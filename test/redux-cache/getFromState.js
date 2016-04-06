@@ -1,5 +1,5 @@
 import chai from 'chai';
-import {getFromState, getDataAndMemoize, getTree} from '../../redux-cache/redux-cache';
+import {getFromState, getDataAndMemoize, getTree} from '../../redux-cache/cache';
 
 let state =  {
     user: {
