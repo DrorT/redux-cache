@@ -4,7 +4,7 @@ import {walkCache} from '../redux-cache/redux-cache';
 import Counter from './Counter';
 
 const mapStateToProps = () =>
-  walkCache({ user: {$type:'ref', $entity:'user', $id:'1'} });
+  walkCache({ user: {$type:'ref', $entity:'Hostel', $id:'1'} });
 
 @connect(mapStateToProps)
 export default class User extends Component {

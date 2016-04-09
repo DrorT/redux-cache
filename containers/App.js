@@ -31,10 +31,6 @@ export default class Counters extends Component {
           <h2>3. Counter with User</h2>
           <CounterWithUser />
         </div>
-        <div>
-          <h2>4. User with Counter</h2>
-          <User />
-        </div>
       </div>
     )
   }

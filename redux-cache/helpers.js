@@ -4,13 +4,14 @@ export const printAST = (ast) => {
   const visitor = {
     Field: {
       enter(node, key, parent, path, ancestors) {
-        resultJson += node.name.value;
+        resultJson += '"'+node.name.value;
         if(node.arguments.length > 0)
           resultJson += "("+ node.arguments.map((arg)=>arg.name.value+":"+arg.value.value).join(',')+")";
+        resultJson += '"';
         if (node.selectionSet)
           resultJson += ':{';
         else
-          resultJson += ',';
+          resultJson += ':{},';
       },
       leave(node) {
         if (node.selectionSet)
@@ -34,7 +35,6 @@ export const mergeRecursive = (obj1, obj2, ast = false) => {
         if(ast && obj1[p][idx].name.value !== val.name.value)
           obj1[p].push(val);
         else {
-          debugger
           obj1[p][idx] = mergeRecursive(obj1[p][idx], val);
         }
       });
@@ -89,4 +89,29 @@ export const traverse = (o,func) => {
     if (o[i] !== undefined && typeof(o[i])=="object")
       traverse(o[i],func);
   }
-}
+};
+
+/**
+ * Mutates object ny adding to it all the paths
+ * @param paths - array of arrays, with each array having a path to a location in object, if the path does not exists the location will be added
+ * @param object
+ */
+export const addPathsToObject = (paths, object={}) =>{
+  let pathsArray = paths;
+  // checks paths is an array of arrays
+  if(!Array.isArray(paths))
+    return;
+  if(!Array.isArray(paths[0]))
+    pathsArray = [paths];
+  pathsArray.forEach((path) => {
+    let location = object;
+    for(let i=0;i<path.length-1;i++){
+      if(!location.hasOwnProperty(path[i]))
+        location[path[i]] = {};
+      if(i==path.length-2)
+        location[path[i]] = mergeRecursive2(location[path[i]], JSON.parse(path[i+1]));
+      location = location[path[i]];
+    }
+  });
+  return object;
+};

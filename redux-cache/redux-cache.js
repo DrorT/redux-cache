@@ -1,19 +1,24 @@
 import {operationReducerFactory, bindOperationToActionCreators} from 'redux-operations';
 import {getTree, getPathFromRef, set, getFromState} from './cache';
-import {appendChangeToState, traverse} from './helpers';
+import {appendChangeToState, traverse, addPathsToObject} from './helpers';
+import {fetchData} from './graphqlTransport';
+import {store} from '../index';
 export const CACHE_SET = 'CACHE_SET';
+export const CACHE_BATCH_SET = 'CACHE_BATCH_SET';
 export const CACHE_GET = 'CACHE_GET';
 
 // Tree of locations in state, that in each path has everything that depends on that path
 let dependeciesTree = {};
 // array of denorm functions to run when their dependencies are called
 let functionArray = [];
-// object with keys as components Ids and true/false to inddicate a component should rendere
 
 // 1st stage - keep the component ID and last props, if props not have changed and does not need to render then skip
 // if needs to render or props changed renders and update props in hash
 let componentDependenciesTree = {};
+// object with keys as components Ids and true/false to inddicate a component should rendere
 let componentRenders = {};
+let missingData = {};
+let getMissingDataCall;
 let idCounter = 1;
 
 /**
@@ -57,6 +62,22 @@ export const cacheSet = (path, data) => {
   };
 };
 
+/**
+ * An action creator - for setting normalized data in the state
+ * @param data
+ * @returns {{type: string, meta: {data: *}}}
+ */
+export const cacheBatchSet = (data) => {
+  return {
+    type: CACHE_BATCH_SET,
+    meta: {
+      cache: {
+        data
+      }
+    }
+  };
+};
+
 export const actionCreators = {cacheGet, cacheSet};
 
 // the initial state to start the object with - should be initialized before coombineReducers
@@ -92,6 +113,19 @@ export const cache = (initialStateP={}) => {
         updateDependenciesFromPath(fullPath);
         return set(state, fullPath, data, false);
       }
+    },
+    CACHE_BATCH_SET: {
+      resolve: (state, action)=> {
+        const { data } = action.meta.cache;
+        if(Array.isArray(data)){
+          let newState = data.reduce((newState, [path, dataObject])=>{
+            let fullPath = getPathFromRef(path) || path;
+            updateDependenciesFromPath(fullPath);
+            return set(newState, fullPath, dataObject, false);
+          }, state);
+          return newState;
+        }
+      }
     }
   });
 };
@@ -101,12 +135,14 @@ export const cache = (initialStateP={}) => {
  * @param path
  */
 const updateDependenciesFromPath = (path) => {
+  let newpath = path;
   let currentLocation = componentDependenciesTree;
   if(path[0] !== 'cache')
-    currentLocation = currentLocation['cache'];
-  for(let i =0; i<=path.length; i++){
-    if(currentLocation) {
-      if (currentLocation.hasOwnProperty("$dependants")) {
+    newpath = ['cache'].concat(path);
+  for(let i =0; i<newpath.length; i++) {
+    if (currentLocation) {
+      currentLocation = currentLocation[newpath[i]];
+      if (currentLocation!==undefined && currentLocation.hasOwnProperty("$dependants")) {
         Object.keys(currentLocation["$dependants"]).forEach((id)=> {
           if (componentRenders[id] !== undefined)
             componentRenders[id] = true;
@@ -114,17 +150,23 @@ const updateDependenciesFromPath = (path) => {
             delete currentLocation["$dependants"][id];
         });
       }
-      currentLocation = currentLocation[path[i]];
     } else {
       break;
     }
-    // should also invalidate anything that depends on lower levels than the level we got to, this is in case that any of the lower levels changed or was deleted
-    if(currentLocation){
-      traverse(currentLocation, (id)=>{
-        if (componentRenders[id] !== undefined)
-          componentRenders[id] = true;
-      });
-    }
+  }
+  // should also invalidate anything that depends on lower levels than the level we got to, this is in case that any of the lower levels changed or was deleted
+  if(currentLocation){
+    // TODO - this can be improved to not traverse anywhere in tree, stop on $dependecies
+    traverse(currentLocation, (key, location)=>{
+      if (location.hasOwnProperty("$dependants")) {
+        Object.keys(location["$dependants"]).forEach((id)=> {
+          if (componentRenders[id] !== undefined)
+            componentRenders[id] = true;
+          else
+            delete location["$dependants"][id];
+        });
+      }
+    });
   }
 };
 
@@ -201,6 +243,8 @@ const getFromCache = (state, queryObject, componentId) => {
     result = getTree(state, queryObject["query"], ref);
     if(result) {
       dependencies = result.missingArray.concat(result.dependenciesArray);
+      addToMissing(result.missingArray);
+      state.missingData = missingData;
       result = result.result;
     }
   }
@@ -212,4 +256,32 @@ const getFromCache = (state, queryObject, componentId) => {
     });
   }
   return result;
+};
+
+/**
+ * Adds data to the missing data structure, this data is then used to load request that data
+ * @param missingArray
+ */
+const addToMissing = (missingArray) => {
+  if(missingArray !== undefined && Array.isArray(missingArray)){
+    addPathsToObject(missingArray, missingData);
+    getMissingDataCall = getMissingDataCall || setTimeout(getMissingData, 1000);
+  }
+};
+
+/**
+ * creates a graphql query from the missingData structure and sends it to server
+ * TODO - This is just a 1st stage very simplistic solution, this should have more act like a router asking for data based on where it can retrieved from
+ */
+const getMissingData = () => {
+  if(Object.keys(missingData).length > 0 ) {
+    fetchData(missingData).then((dataArray)=> {
+      if (Array.isArray(dataArray) && dataArray.length > 0) {
+        // TODO - dispatch should probably be in the transport layer, 1st allows for faster data to store when many requests are sent, and also allows for business logic
+        store.dispatch(cacheBatchSet(dataArray));
+      }
+    });
+    missingData = {};
+  }
+  getMissingDataCall = undefined;
 };

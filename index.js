@@ -5,7 +5,7 @@ import Counters from './containers/App'
 import configureStore from './configureStore'
 import DevTools from './DevTools';
 
-const store = configureStore();
+export const store = configureStore();
 
 render(
   <Provider store={store}>

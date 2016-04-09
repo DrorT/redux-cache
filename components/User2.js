@@ -4,7 +4,7 @@ import {walkCache} from '../redux-cache/redux-cache';
 
 const mapStateToProps = () =>
   walkCache((state,props)=>{
-    return { user: {$type:'ref', $entity:'user', $id:props.id, query:'{firstname, lastname}'}, user1:  {$type:'ref', $entity:'user', $id:props.id+1, query:'{firstname, lastname}'}};
+    return { user: {$type:'ref', $entity:'Hostel', $id:props.id, query:'{id, name, roomTypes{id,name}}'}, user1:  {$type:'ref', $entity:'Hostel', $id:parseInt(props.id)+1, query:'{id, name, email, roomTypes{id, name, rooms{id, name}}}'}};
   });
 
 @connect(mapStateToProps)

@@ -95,8 +95,8 @@ export const set = (state, path, data)=> appendChangeToState(path, state, data);
 export const getTree = (state, dataAst, startPoint = undefined) => {
   let path = startPoint = getPathFromRef(startPoint, state) || startPoint;
   let startLocation = getFromState(state, startPoint, undefined, {followRefs: false});
-  if(!startLocation)
-    return undefined;
+  // if(!startLocation)
+  //   return undefined;
   if(!dataAst)
     return {result: startLocation, missing: undefined, printedMissing: '{}', missingNormalized: {}, dependenciesNormalized:{}, dependenciesArray:[path], missingArray:[]};
 
@@ -135,8 +135,9 @@ export const getTree = (state, dataAst, startPoint = undefined) => {
             let stateValue = getFromState(state, [node.name.value], locationInState);
             // if there is no data no reason to go down this tree
             if (!stateValue) {
-              assignFn(missingNormalized, path, node);
-              missingArray.push(path);
+              let continuation = printAST(node.selectionSet);
+              assignFn(missingNormalized, path, continuation);
+              missingArray.push(path.concat(continuation));
               path = path.slice(0,-1);
               return false;
             }
